@@ -1,0 +1,8 @@
+/images/*
+*.mp3
+*.pdf
+*.txt
+!test.pdf
+!book.txt
+!requirements.txt
+/.idea
