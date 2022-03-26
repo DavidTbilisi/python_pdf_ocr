@@ -3,12 +3,13 @@ import os
 import time
 import pytesseract
 from pdf2image import convert_from_path
-exported_name = "10americans"
+exported_name = "terminebi"
+dir_path = os.path.dirname(os.path.realpath(__file__))
 
 
 def convert_to_image():
     # pdfs = r"provide path to pdf file"
-    pdfs = r"/home/arch1/Code/PYTHON/OCR_py/americans.pdf"
+    pdfs = f"/{dir_path}/test.pdf"
     pages = convert_from_path(pdfs, 200)
 
     i = 1
@@ -21,7 +22,7 @@ def convert_to_image():
 def ocr_core(img):
     text = pytesseract.image_to_string(img, lang='kat')
     time.sleep(1)
-    with open(f"/home/arch1/Code/PYTHON/OCR_py/{exported_name}.txt", "a", encoding="utf8") as f:
+    with open(f"{dir_path}/{exported_name}.txt", "a", encoding="utf8") as f:
         f.write(text + " \n")
     return text
 
@@ -29,7 +30,7 @@ def ocr_core(img):
 
 
 # convert_to_image()
-DIR = '/home/arch1/Code/PYTHON/OCR_py/images'
+DIR = f'{dir_path}/images'
 final = len([name for name in os.listdir(DIR) if os.path.isfile(os.path.join(DIR, name))])
 for page in range(1, final+1):
     img = cv2.imread(f"images/Page_{page}.jpg")
