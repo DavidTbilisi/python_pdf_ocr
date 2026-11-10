@@ -7,3 +7,5 @@
 !requirements.txt
 /.idea
 venv
+/output
+__pycache__/
