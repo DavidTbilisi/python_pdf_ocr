@@ -16,6 +16,7 @@ import asyncio
 import hashlib
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -395,11 +396,78 @@ async def run_tts(work: Path, voice: str, album: str, concurrency: int) -> None:
     print(f"Audio: {len(done)} files in {work / 'audio'}")
 
 
+# ---------------------------------------------------------------- video (for YouTube)
+
+def render_video(mp3: Path, title: str, num: int, total: int, album: str, cover: Path, font: str,
+                 out: Path) -> None:
+    """Still video: book cover on the left, part number and title on the right, the MP3 as audio."""
+    import textwrap
+
+    with tempfile.TemporaryDirectory() as tmp:
+        head, body = Path(tmp) / "head.txt", Path(tmp) / "title.txt"
+        head.write_text(f"{album}\nPart {num} of {total}", encoding="utf8")
+        body.write_text(textwrap.fill(title, 30), encoding="utf8")
+        graph = (
+            "[0:v]scale=-2:1080,pad=1920:1080:0:0:color=0x0f3d2e,"
+            f"drawtext=fontfile='{font}':textfile='{head}':fontcolor=0xd8d2c0:fontsize=40:"
+            "line_spacing=12:x=760:y=150,"
+            f"drawtext=fontfile='{font}':textfile='{body}':fontcolor=0xe8c27a:fontsize=60:"
+            "line_spacing=20:x=760:y=(h-text_h)/2+40,format=yuv420p[v]"
+        )
+        subprocess.run(
+            ["ffmpeg", "-v", "error", "-y", "-loop", "1", "-framerate", "1", "-i", str(cover), "-i", str(mp3),
+             "-filter_complex", graph, "-map", "[v]", "-map", "1:a", "-c:v", "libopenh264", "-r", "1",
+             "-c:a", "aac", "-b:a", "96k", "-shortest", "-movflags", "+faststart",
+             "-metadata", f"title={title}", str(out.with_suffix(".part.mp4"))],
+            check=True,
+        )
+    out.with_suffix(".part.mp4").rename(out)
+
+
+def run_video(pdf: Path, work: Path, cover_page: int, album: str, jobs: int) -> None:
+    """One MP4 per part plus its transcript, for YouTube's caption auto-sync."""
+    parts = sorted((work / "text").glob("*.txt"))
+    audio = {int(p.name[:2]): p for p in (work / "audio").glob("*.mp3")}
+    if not parts or len(audio) < len(parts):
+        sys.exit("run the text and tts stages first")
+    video_dir = work / "video"
+    video_dir.mkdir(exist_ok=True)
+
+    cover = work / "cover.png"
+    if not cover.exists():
+        with tempfile.TemporaryDirectory() as tmp:
+            subprocess.run(["pdfimages", "-png", "-f", str(cover_page), "-l", str(cover_page), str(pdf),
+                            f"{tmp}/c"], check=True)
+            images = sorted(Path(tmp).glob("c-*.png"))
+            if not images:
+                sys.exit(f"no image on page {cover_page} to use as the cover")
+            shutil.copyfile(images[0], cover)  # tmp may be another filesystem: no rename
+    font = subprocess.run(["fc-match", "-f", "%{file}", "sans-serif:bold"], capture_output=True, text=True,
+                          check=True).stdout
+
+    todo = []
+    for txt in parts:
+        num = int(txt.stem)
+        title, _, body = txt.read_text(encoding="utf8").partition("\n\n")
+        out = video_dir / audio[num].with_suffix(".mp4").name
+        (video_dir / audio[num].with_suffix(".txt").name).write_text(body, encoding="utf8")  # transcript
+        if not out.exists():
+            todo.append((audio[num], title, num, len(parts), album, cover, font, out))
+    print(f"Video: {len(parts)} parts, {len(todo)} to render")
+    with ThreadPoolExecutor(jobs) as pool:
+        futures = {pool.submit(render_video, *args): args[-1] for args in todo}
+        for i, fut in enumerate(as_completed(futures), 1):
+            fut.result()
+            print(f"  [{i}/{len(todo)}] {futures[fut].name}", flush=True)
+    print(f"Videos and transcripts in {video_dir}")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("pdf", type=Path)
     ap.add_argument("--work", type=Path, help="work/output dir (default: output/<pdf name>)")
-    ap.add_argument("--stage", choices=["ocr", "text", "tts", "all"], default="all")
+    ap.add_argument("--stage", choices=["ocr", "text", "tts", "video", "all"], default="all",
+                    help="'all' runs ocr, text and tts; 'video' is separate")
     ap.add_argument("--lang", default="eng", help="tesseract language (eng, kat, ...)")
     ap.add_argument("--dpi", type=int, default=300, help="render resolution for pages that are not a single scan")
     ap.add_argument("--jobs", type=int, default=os.cpu_count())
@@ -409,6 +477,7 @@ def main() -> None:
     ap.add_argument("--voice", default="en-US-GuyNeural", help="see: edge-tts --list-voices")
     ap.add_argument("--tts-jobs", type=int, default=4, help="parallel edge-tts requests")
     ap.add_argument("--title", help="album tag (default: PDF name)")
+    ap.add_argument("--cover-page", type=int, default=1, help="page whose image is the video background")
     args = ap.parse_args()
 
     pdf = args.pdf.expanduser().resolve()
@@ -420,9 +489,11 @@ def main() -> None:
         run_ocr(pdf, work, args.lang, args.dpi, args.jobs)
     if args.stage in ("text", "all"):
         run_text(work, args.first_page, args.last_page, args.part_words)
+    album = args.title or pdf.stem.replace("_", " ")
     if args.stage in ("tts", "all"):
-        album = args.title or pdf.stem.replace("_", " ")
         asyncio.run(run_tts(work, args.voice, album, args.tts_jobs))
+    if args.stage == "video":
+        run_video(pdf, work, args.cover_page, album, max(1, args.jobs // 2))
 
 
 if __name__ == "__main__":
